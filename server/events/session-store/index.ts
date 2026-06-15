@@ -467,17 +467,23 @@ export type PushToolResultOutcome = { kind: "skipped"; reason: string } | { kind
  *  can't beat its preceding `tool_call` to disk under
  *  `PERSIST_TOOL_CALLS=1` (Codex review on #1101). */
 export async function pushToolResult(chatSessionId: string, result: unknown): Promise<PushToolResultOutcome> {
+  // Terminal-driven sessions are NOT registered in this store (the chat
+  // history now comes from Claude's own .jsonl, ported from mulmoterminal —
+  // no separate session store needed). Their MCP-broker tool results must
+  // still reach the GUI panel, so we ALWAYS publish to the session channel;
+  // the jsonl persistence below only applies to store-backed (legacy)
+  // sessions.
   const session = store.get(chatSessionId);
-  if (!session) return { kind: "skipped", reason: "unknown session" };
-
-  await enqueueJsonlAppend(
-    session,
-    `${JSON.stringify({
-      source: "tool",
-      type: EVENT_TYPES.toolResult,
-      result,
-    })}\n`,
-  );
+  if (session) {
+    await enqueueJsonlAppend(
+      session,
+      `${JSON.stringify({
+        source: "tool",
+        type: EVENT_TYPES.toolResult,
+        result,
+      })}\n`,
+    );
+  }
   publishToSessionChannel(chatSessionId, {
     type: EVENT_TYPES.toolResult,
     result,
