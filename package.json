@@ -14,6 +14,7 @@
     "packages/plugins/*"
   ],
   "scripts": {
+    "postinstall": "node server/fix-pty-perms.js",
     "plugins:codegen": "tsx scripts/codegen-plugin-barrels.ts",
     "plugins:codegen:check": "tsx scripts/codegen-plugin-barrels.ts --check",
     "predev": "yarn plugins:codegen",
