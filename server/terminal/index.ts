@@ -1,18 +1,17 @@
-// Interactive `claude`-in-a-PTY relay + GUI-protocol data channel.
+// Interactive `claude`-in-a-PTY relay + session-activity channel.
 //
-// Ported from mulmoterminal (server/index.js). Two halves:
+// Ported from mulmoterminal (server/index.js):
 //
-//   1. A raw `ws` WebSocket server at `/ws/terminal` that streams an
-//      interactive `claude` PTY to an xterm terminal in the browser. The
-//      PTY map buffers recent output and survives a socket drop so the
-//      user can reattach (e.g. switch sessions and come back).
+//   - A raw `ws` WebSocket server at `/ws/terminal` that streams an
+//     interactive `claude` PTY to an xterm terminal in the browser. The
+//     PTY map buffers recent output and survives a socket drop so the
+//     user can reattach (e.g. switch sessions and come back).
 //
-//   2. The GUI-protocol "data channel": the GUI-protocol MCP tools
-//      (presentMarkdown / presentForm), wired into each spawned `claude`
-//      via `--mcp-config`, POST frames to `/api/gui`; we store them per
-//      session and publish on the `gui` pub/sub channel so the GUI panel
-//      renders them live. presentForm additionally registers a pending
-//      request that the user's `/api/gui/answer` submission resolves.
+// Each spawned `claude` is wired to MulmoClaude's REAL `mulmoclaude` MCP
+// broker (via `--mcp-config`) with `MULMOCLAUDE_CHAT_SESSION_ID` set, so
+// the broker's tool results publish on `sessionChannel(sessionId)` and
+// the right-hand GUI panel renders the real plugin views directly — no
+// separate GUI data channel is needed.
 //
 // The terminal WS shares the HTTP server with socket.io (the pub/sub at
 // `/ws/pubsub`) via `noServer:true` + a manual `upgrade` handler that
@@ -24,7 +23,6 @@ import path from "path";
 import fs from "fs/promises";
 import http from "http";
 import { randomUUID } from "crypto";
-import { fileURLToPath } from "url";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { IPubSub } from "../events/pub-sub/index.js";
 import { PUBSUB_CHANNELS } from "../../src/config/pubsubChannels.js";
@@ -34,49 +32,18 @@ import { buildMcpConfig, resolveMcpConfigPaths, BASE_ALLOWED_TOOLS, CLAUDE_AI_CO
 import { writeJsonAtomic } from "../utils/files/json.js";
 import { loadSettings } from "../system/config.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 const CLAUDE_BIN = process.env.CLAUDE_BIN || "claude";
 
 // A session id is always a UUID (server-generated, or a .jsonl basename).
 // Reject anything else so a client can't smuggle CLI flags into the
 // spawned process (e.g. "--resume" followed by a re-parsed flag).
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const UUID_RE = SESSION_ID_RE;
 
 // Pub/sub channels (declared centrally in src/config/pubsubChannels.ts).
 const SESSIONS_CHANNEL = PUBSUB_CHANNELS.terminalSessions;
-const GUI_CHANNEL = PUBSUB_CHANNELS.gui;
 
-// Stdio MCP server wired into each spawned claude (--mcp-config). It
-// exposes the GUI-protocol tools (presentMarkdown, presentForm).
-const MCP_SERVER_PATH = path.join(__dirname, "..", "mcp", "present-markdown.mjs");
-
-// Server id of the spike GUI MCP server, merged into the broker
-// mcp-config alongside the real `mulmoclaude` broker.
-const GUI_MCP_SERVER_ID = "mulmoclaude-gui";
-
-// MCP tool names claude uses, in mcp__<server>__<tool> form. Auto-allowed
-// via --allowedTools so the GUI tools run without a permission prompt.
-const GUI_MCP_TOOLS = [`mcp__${GUI_MCP_SERVER_ID}__presentMarkdown`, `mcp__${GUI_MCP_SERVER_ID}__presentForm`];
-
-const GUI_HISTORY_LIMIT = 50;
-const FORM_POLL_HOLD_MS = 25 * 1000;
 const SESSION_LIST_LIMIT = 50;
 const OUTPUT_BUFFER_LIMIT = 64 * 1024;
-
-interface GuiFrame {
-  type: string;
-  data: Record<string, unknown>;
-}
-
-interface PendingForm {
-  sessionId: string;
-  answered: boolean;
-  answer: Record<string, unknown> | null;
-  waiters: Set<{ res: Response; timer: ReturnType<typeof setTimeout> }>;
-  frame: GuiFrame;
-}
 
 interface PtyEntry {
   // node-pty's IPty — typed loosely since node-pty is dynamically imported.
@@ -102,11 +69,6 @@ interface ActivityState {
   at?: number;
 }
 
-// Latest GUI payloads per session, kept in memory so the panel can replay
-// them when a session is (re)selected.
-const guiPayloads = new Map<string, GuiFrame[]>();
-// In-flight presentForm requests, keyed by requestId.
-const pendingForms = new Map<string, PendingForm>();
 // Per-session "working" / "waiting" state, driven by Claude hooks.
 const activity = new Map<string, ActivityState>();
 // Live ptys keyed by session id.
@@ -181,22 +143,6 @@ function hookSettingsJson(port: number): string {
   });
 }
 
-// The spike GUI MCP server spec, merged into the broker's mcp-config
-// under `GUI_MCP_SERVER_ID`. `type: "stdio"` is required by Claude
-// Code 2.1.x for locally-spawned servers (see `buildMulmoclaudeServer`
-// in agent/config.ts) — without it the entry is silently skipped.
-function guiMcpServerSpec(sessionId: string, port: number): object {
-  return {
-    type: "stdio",
-    command: process.execPath, // the node running this server
-    args: [MCP_SERVER_PATH],
-    env: {
-      MULMOCLAUDE_GUI_SESSION_ID: sessionId,
-      MULMOCLAUDE_GUI_PORT: String(port),
-    },
-  };
-}
-
 // ── Session listing (Claude .jsonl files) ───────────────────────────
 
 function projectSessionsDir(cwd: string): string {
@@ -257,7 +203,7 @@ async function sessionFileExists(id: string): Promise<boolean> {
   }
 }
 
-// ── Express router (/api/terminal + /api/gui) ───────────────────────
+// ── Express router (/api/terminal) ──────────────────────────────────
 
 export function createTerminalRouter(): Router {
   const router = express.Router();
@@ -278,104 +224,6 @@ export function createTerminalRouter(): Router {
       }
     }
     res.json({ ok: true });
-  });
-
-  // GUI-protocol MCP tools POST frames here.
-  router.post("/api/gui", (req: Request, res: Response) => {
-    const { sessionId, type, data } = (req.body || {}) as { sessionId?: string; type?: string; data?: Record<string, unknown> };
-    if (!sessionId || !SESSION_ID_RE.test(sessionId)) {
-      return res.status(400).json({ error: "invalid sessionId" });
-    }
-    if (typeof data !== "object" || data === null) {
-      return res.status(400).json({ error: "invalid data" });
-    }
-
-    let frame: GuiFrame;
-    if (type === "presentMarkdown") {
-      if (typeof data.markdown !== "string") {
-        return res.status(400).json({ error: "invalid markdown" });
-      }
-      frame = { type, data: { markdown: data.markdown } };
-    } else if (type === "presentForm") {
-      const requestId = data.requestId as string | undefined;
-      const schema = data.schema as { fields?: unknown[] } | undefined;
-      if (!requestId || !UUID_RE.test(requestId)) {
-        return res.status(400).json({ error: "invalid requestId" });
-      }
-      if (!schema || typeof schema !== "object" || !Array.isArray(schema.fields) || schema.fields.length === 0) {
-        return res.status(400).json({ error: "invalid schema" });
-      }
-      frame = { type, data: { requestId, schema, answered: false, answer: null } };
-      pendingForms.set(requestId, { sessionId, answered: false, answer: null, waiters: new Set(), frame });
-    } else {
-      return res.status(400).json({ error: "unsupported type" });
-    }
-
-    const list = guiPayloads.get(sessionId) || [];
-    list.push(frame);
-    if (list.length > GUI_HISTORY_LIMIT) list.splice(0, list.length - GUI_HISTORY_LIMIT);
-    guiPayloads.set(sessionId, list);
-
-    pubsub?.publish(GUI_CHANNEL, { sessionId, ...frame });
-    res.json({ ok: true });
-  });
-
-  // Long-poll for a form's answer.
-  router.get("/api/gui/answer/:requestId", (req: Request, res: Response) => {
-    const requestId = String(req.params.requestId);
-    if (!UUID_RE.test(requestId)) {
-      return res.status(400).json({ error: "invalid requestId" });
-    }
-    const form = pendingForms.get(requestId);
-    if (!form) return res.status(404).json({ error: "unknown requestId" });
-    if (form.answered) return res.json({ answer: form.answer });
-
-    const waiter = { res, timer: null as unknown as ReturnType<typeof setTimeout> };
-    waiter.timer = setTimeout(() => {
-      form.waiters.delete(waiter);
-      if (!res.headersSent) res.status(204).end();
-    }, FORM_POLL_HOLD_MS);
-    form.waiters.add(waiter);
-    req.on("close", () => {
-      clearTimeout(waiter.timer);
-      form.waiters.delete(waiter);
-    });
-  });
-
-  // GUI panel POSTs the user's form submission here.
-  router.post("/api/gui/answer", (req: Request, res: Response) => {
-    const { requestId, answer } = (req.body || {}) as { requestId?: string; answer?: Record<string, unknown> };
-    if (!requestId || !UUID_RE.test(requestId)) {
-      return res.status(400).json({ error: "invalid requestId" });
-    }
-    if (typeof answer !== "object" || answer === null || Array.isArray(answer)) {
-      return res.status(400).json({ error: "invalid answer" });
-    }
-    const form = pendingForms.get(requestId);
-    if (!form) return res.status(404).json({ error: "unknown requestId" });
-
-    if (!form.answered) {
-      form.answered = true;
-      form.answer = answer;
-      form.frame.data.answered = true;
-      form.frame.data.answer = answer;
-      for (const w of form.waiters) {
-        clearTimeout(w.timer);
-        if (!w.res.headersSent) w.res.json({ answer });
-      }
-      form.waiters.clear();
-      pubsub?.publish(GUI_CHANNEL, { sessionId: form.sessionId, type: "formAnswered", data: { requestId, answer } });
-    }
-    res.json({ ok: true });
-  });
-
-  // Replay a session's stored GUI payloads.
-  router.get("/api/gui/:sessionId", (req: Request, res: Response) => {
-    const sessionId = String(req.params.sessionId);
-    if (!SESSION_ID_RE.test(sessionId)) {
-      return res.status(400).json({ error: "invalid sessionId" });
-    }
-    res.json({ sessionId, payloads: guiPayloads.get(sessionId) || [] });
   });
 
   // List the chat sessions for the workspace, including new (unpersisted) ones.
@@ -513,10 +361,12 @@ async function handleConnection(ws: WebSocket, req: http.IncomingMessage, port: 
     const settings = hookSettingsJson(port);
 
     // Wire the REAL MulmoClaude MCP broker (auth + internal
-    // /api/agent/internal callbacks) plus the spike GUI server into
-    // this spawned `claude`. Roles are being removed, so we expose the
-    // full, unfiltered tool surface (`getAllToolDescriptors`) rather
-    // than a role-gated subset.
+    // /api/agent/internal callbacks) into this spawned `claude`. With
+    // `MULMOCLAUDE_CHAT_SESSION_ID` set (below), the broker publishes
+    // every tool result on `sessionChannel(sessionId)`, which the
+    // right-hand GUI panel renders as real plugin views. Roles are being
+    // removed, so we expose the full, unfiltered tool surface
+    // (`getAllToolDescriptors`) rather than a role-gated subset.
     const allTools = getAllToolDescriptors();
     const activePlugins = allTools.map((descriptor) => descriptor.name);
     const mcpConfig = buildMcpConfig({
@@ -526,16 +376,13 @@ async function handleConnection(ws: WebSocket, req: http.IncomingMessage, port: 
       useDocker: false,
       userServers: {},
     });
-    // Merge the spike GUI server so presentMarkdown / presentForm keep
-    // POSTing to /api/gui and rendering in the right panel.
-    mcpConfig.mcpServers[GUI_MCP_SERVER_ID] = guiMcpServerSpec(sessionId, port);
 
     const mcpPaths = resolveMcpConfigPaths({ workspacePath: workspaceCwd, sessionId, useDocker: false });
     await writeJsonAtomic(mcpPaths.hostPath, mcpConfig);
 
     // Allowed-tools: base CLI tools + the broker wildcard + every
-    // broker tool's full name + claude.ai connectors + GUI tools +
-    // the web UI's extra allowlist. Deduped. We deliberately drop
+    // broker tool's full name + claude.ai connectors + the web UI's
+    // extra allowlist. Deduped. We deliberately drop
     // `--strict-mcp-config` so the user's claude.ai connectors and
     // `claude mcp`-added servers also load.
     const allowedTools = [
@@ -544,13 +391,12 @@ async function handleConnection(ws: WebSocket, req: http.IncomingMessage, port: 
         "mcp__mulmoclaude",
         ...CLAUDE_AI_CONNECTOR_SERVERS,
         ...allTools.map((descriptor) => descriptor.fullName),
-        ...GUI_MCP_TOOLS,
         ...loadSettings().extraAllowedTools,
       ]),
     ].join(",");
 
-    const guiArgs = ["--mcp-config", mcpPaths.argPath, "--allowedTools", allowedTools];
-    const args = onDisk && resume ? ["--resume", resume, "--settings", settings, ...guiArgs] : ["--session-id", sessionId, "--settings", settings, ...guiArgs];
+    const mcpArgs = ["--mcp-config", mcpPaths.argPath, "--allowedTools", allowedTools];
+    const args = onDisk && resume ? ["--resume", resume, "--settings", settings, ...mcpArgs] : ["--session-id", sessionId, "--settings", settings, ...mcpArgs];
 
     log.info("terminal", `spawning claude (${onDisk ? "resume" : "new"} ${sessionId})`);
 

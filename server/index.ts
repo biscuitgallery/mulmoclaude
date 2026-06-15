@@ -275,16 +275,12 @@ app.use("/api", (req, res, next) => {
     next();
     return;
   }
-  // Interactive-terminal GUI-protocol data channel. The GUI-protocol
-  // MCP server subprocess (server/mcp/present-markdown.mjs) and the
-  // Claude settings hook (curl) POST/GET these paths WITHOUT a bearer
-  // token — they're local sibling processes with no way to read it.
-  // Same rationale as `/files/`: localhost-only listener + same-origin
-  // CSRF guard still apply. The browser's own fetches to these paths
-  // still attach the token (apiGet/apiPost); bypassed paths just skip
-  // the check, so authenticated requests pass through unchanged.
-  // `/api/terminal/sessions` stays behind auth (browser-only).
-  if (req.path.startsWith("/gui") || req.path === "/terminal/hook") {
+  // Interactive-terminal Claude settings hook. The Claude settings hook
+  // (curl) POSTs `/api/terminal/hook` WITHOUT a bearer token — it's a
+  // local sibling process with no way to read it. Same rationale as
+  // `/files/`: localhost-only listener + same-origin CSRF guard still
+  // apply. `/api/terminal/sessions` stays behind auth (browser-only).
+  if (req.path === "/terminal/hook") {
     next();
     return;
   }
@@ -663,9 +659,9 @@ app.use(hookLogRoutes);
 app.use(skillsRoutes);
 app.use(collectionsRoutes);
 app.use(runtimePluginRoutes);
-// Interactive-terminal GUI-protocol routes (/api/terminal/*, /api/gui/*).
-// The WebSocket relay itself is attached in the app.listen callback below
-// via attachTerminalServer (it needs the live httpServer + pubsub + port).
+// Interactive-terminal routes (/api/terminal/*). The WebSocket relay
+// itself is attached in the app.listen callback below via
+// attachTerminalServer (it needs the live httpServer + pubsub + port).
 app.use(createTerminalRouter());
 async function listSessionsForBridge(opts: { limit: number; offset: number }) {
   const rows = await loadAllSessions();

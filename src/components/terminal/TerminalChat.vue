@@ -3,12 +3,13 @@ import { ref } from "vue";
 import { v4 as uuidv4 } from "uuid";
 import TerminalSessionList from "./TerminalSessionList.vue";
 import TerminalView from "./Terminal.vue";
-import GuiPanel from "./GuiPanel.vue";
+import TerminalGuiPanel from "./TerminalGuiPanel.vue";
 
 // Two-panel interactive-Claude chat: session list (left) + terminal
 // (center) + GUI panel (right). The terminal streams an interactive
-// `claude` PTY over /ws/terminal; the GUI panel renders GUI-protocol
-// frames (presentMarkdown / presentForm) keyed on the active session.
+// `claude` PTY over /ws/terminal; the GUI panel renders MulmoClaude's
+// real plugin views, fed by the `mulmoclaude` MCP broker's tool results
+// published on the session pub/sub channel keyed on the active session.
 
 // `activeId` is the session currently in the foreground. `null` only
 // transiently before the first connect resolves an id — but we now
@@ -44,7 +45,7 @@ function onSession(id: string) {
     <TerminalSessionList :active-id="activeId" @select="selectSession" @new="newSession" />
     <div class="main">
       <TerminalView :session-id="activeId" :connect-key="connectKey" @session="onSession" />
-      <GuiPanel :session-id="activeId" />
+      <TerminalGuiPanel :session-id="activeId" />
     </div>
   </div>
 </template>
@@ -58,7 +59,7 @@ function onSession(id: string) {
   overflow: hidden;
 }
 
-/* SessionList | [ Terminal | GuiPanel ] */
+/* SessionList | [ Terminal | TerminalGuiPanel ] */
 .main {
   display: flex;
   flex: 1;
