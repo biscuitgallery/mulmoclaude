@@ -28,8 +28,13 @@ function connect() {
   status.value = "connecting";
 
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const query = props.sessionId ? `?session=${encodeURIComponent(props.sessionId)}` : "";
-  const sock = new WebSocket(`${proto}//${location.host}/ws/terminal${query}`);
+  const params = new URLSearchParams();
+  if (props.sessionId) params.set("session", props.sessionId);
+  // Send our fitted size so the server spawns the PTY at the panel's real
+  // (half-width) size, avoiding a 120-col TUI that wraps and overlaps.
+  params.set("cols", String(term.cols));
+  params.set("rows", String(term.rows));
+  const sock = new WebSocket(`${proto}//${location.host}/ws/terminal?${params.toString()}`);
   ws = sock;
 
   sock.onopen = () => {
@@ -76,7 +81,6 @@ onMounted(() => {
   term.loadAddon(new WebLinksAddon());
 
   term.open(terminalRef.value!);
-  fitAddon.fit();
 
   term.onData((data) => {
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -92,14 +96,21 @@ onMounted(() => {
   });
   resizeObserver.observe(terminalRef.value!);
 
-  connect();
-  term.focus();
+  // Fit AFTER the flex layout has settled so term.cols/rows reflect the
+  // real (half-width) panel before we connect — the connect URL carries
+  // those dimensions as the PTY spawn size.
+  requestAnimationFrame(() => {
+    fitAddon.fit();
+    connect();
+    term.focus();
+  });
 });
 
 // Reconnect (resume a different session / start fresh) on every user action.
 watch(
   () => props.connectKey,
   () => {
+    fitAddon.fit();
     connect();
     term.focus();
   },

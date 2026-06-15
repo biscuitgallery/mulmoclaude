@@ -321,8 +321,22 @@ export function attachTerminalServer(httpServer: http.Server, opts: AttachTermin
   log.info("terminal", "interactive terminal relay attached at /ws/terminal");
 }
 
+// Parse an integer query param, clamped to [min, max]; fall back when
+// absent or out of range. Used for the spawn cols/rows the browser sends.
+function clampedIntParam(value: string | null, min: number, max: number, fallback: number): number {
+  const n = value === null ? NaN : Number(value);
+  return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
+}
+
 async function handleConnection(ws: WebSocket, req: http.IncomingMessage, port: number): Promise<void> {
-  const resume = new URL(req.url || "/", "http://localhost").searchParams.get("session");
+  const url = new URL(req.url || "/", "http://localhost");
+  const resume = url.searchParams.get("session");
+  // Spawn the PTY at the browser terminal's actual size. The terminal is
+  // now only a half-width panel, so a fixed 120-col default makes Claude's
+  // TUI wrap/overlap on the first frame; matching the client's fitted size
+  // renders it correctly from the start.
+  const spawnCols = clampedIntParam(url.searchParams.get("cols"), 2, 500, 80);
+  const spawnRows = clampedIntParam(url.searchParams.get("rows"), 1, 200, 30);
   if (resume && !SESSION_ID_RE.test(resume)) {
     log.warn("terminal", `rejecting non-UUID session id: ${JSON.stringify(resume)}`);
     ws.close();
@@ -402,8 +416,8 @@ async function handleConnection(ws: WebSocket, req: http.IncomingMessage, port: 
 
     const term = pty.spawn(CLAUDE_BIN, args, {
       name: "xterm-256color",
-      cols: 120,
-      rows: 30,
+      cols: spawnCols,
+      rows: spawnRows,
       cwd: workspaceCwd,
       env: { ...(process.env as { [key: string]: string }), MULMOCLAUDE_CHAT_SESSION_ID: sessionId },
     }) as unknown as PtyEntry["term"];
