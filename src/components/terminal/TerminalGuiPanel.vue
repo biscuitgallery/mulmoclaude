@@ -11,6 +11,10 @@ import { useTerminalSession } from "./useTerminalSession";
 // selected tool result with the SAME `<component :is>` pattern as
 // App.vue's single-layout block, so the real plugin views
 // (presentDocument, presentForm, …) render identically.
+//
+// A gear button toggles a tool-call history drawer listing every result
+// the session has produced (name + label), so it's easy to see what
+// Claude actually called and jump between results.
 
 const props = defineProps<{ sessionId: string | null }>();
 
@@ -19,12 +23,14 @@ const { session, applyUpdatedResult } = useTerminalSession(sessionId);
 
 const results = computed<ToolResultComplete[]>(() => session.value?.toolResults ?? []);
 
-// Selection: explicit pick (clicking a title) wins; otherwise default to
-// the most recent result. Cleared whenever the session id changes so a
-// stale uuid from a previous session never sticks.
+// Selection: explicit pick (clicking a history row) wins; otherwise
+// default to the most recent result. Cleared whenever the session id
+// changes so a stale uuid from a previous session never sticks.
 const selectedUuid = ref<string | null>(null);
+const showHistory = ref(false);
 watch(sessionId, () => {
   selectedUuid.value = null;
+  showHistory.value = false;
 });
 
 const selectedResult = computed<ToolResultComplete | null>(() => {
@@ -37,8 +43,9 @@ const selectedResult = computed<ToolResultComplete | null>(() => {
   return list[list.length - 1];
 });
 
-function selectResult(uuid: string): void {
+function selectFromHistory(uuid: string): void {
   selectedUuid.value = uuid;
+  showHistory.value = false;
 }
 
 function handleUpdateResult(updatedResult: ToolResultComplete): void {
@@ -51,19 +58,31 @@ function resultLabel(result: ToolResultComplete, index: number): string {
 </script>
 
 <template>
+  <!-- eslint-disable @intlify/vue-i18n/no-raw-text -- interactive-terminal panel is dev chrome; its strings stay out of the 8-locale i18n bundle (matches the rest of src/components/terminal). -->
   <section class="gui-panel">
-    <!-- Result picker. Shown only when more than one result exists so a
-         single render fills the panel without chrome. -->
-    <div v-if="results.length > 1" class="picker">
+    <header class="panel-header">
+      <span class="panel-title">Output</span>
+      <span v-if="results.length" class="count">{{ results.length }}</span>
+      <button class="gear" :class="{ active: showHistory }" title="Tool call history" @click="showHistory = !showHistory">
+        <span class="material-icons">settings</span>
+      </button>
+    </header>
+
+    <!-- Tool-call history drawer. Lists every result the session has
+         produced; clicking one renders it and closes the drawer. -->
+    <div v-if="showHistory" class="history">
+      <div v-if="results.length === 0" class="history-empty">No tool calls yet.</div>
       <button
         v-for="(result, i) in results"
         :key="result.uuid"
-        class="picker-item"
+        class="history-item"
         :class="{ active: result.uuid === (selectedResult?.uuid ?? '') }"
         :title="resultLabel(result, i)"
-        @click="selectResult(result.uuid)"
+        @click="selectFromHistory(result.uuid)"
       >
-        {{ resultLabel(result, i) }}
+        <span class="history-index">{{ i + 1 }}</span>
+        <span class="history-tool">{{ result.toolName || "(no tool)" }}</span>
+        <span class="history-label">{{ resultLabel(result, i) }}</span>
       </button>
     </div>
 
@@ -78,10 +97,10 @@ function resultLabel(result: ToolResultComplete, index: number): string {
       <div v-else-if="selectedResult" class="raw">
         <pre>{{ JSON.stringify(selectedResult, null, 2) }}</pre>
       </div>
-      <!-- eslint-disable-next-line @intlify/vue-i18n/no-raw-text -- interactive-terminal panel is dev chrome; its strings stay out of the i18n bundle (matches the rest of src/components/terminal). -->
       <div v-else class="empty">Tool results from Claude will render here.</div>
     </div>
   </section>
+  <!-- eslint-enable @intlify/vue-i18n/no-raw-text -->
 </template>
 
 <style scoped>
@@ -96,32 +115,99 @@ function resultLabel(result: ToolResultComplete, index: number): string {
   border-left: 1px solid #2a2a4e;
 }
 
-.picker {
+.panel-header {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 6px 8px;
-  background: #f3f4f6;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #16213e;
+  color: #e0e0e0;
+  font-family: system-ui, sans-serif;
+  flex-shrink: 0;
+}
+.panel-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.count {
+  font-size: 11px;
+  background: #2563eb;
+  color: #ffffff;
+  border-radius: 9999px;
+  padding: 0 7px;
+  line-height: 18px;
+}
+.gear {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  background: none;
+  border: none;
+  color: #9aa5c4;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+}
+.gear:hover {
+  color: #ffffff;
+}
+.gear.active {
+  color: #ffffff;
+  background: #1d2b4e;
+}
+.gear .material-icons {
+  font-size: 18px;
+}
+
+.history {
+  max-height: 45%;
+  overflow-y: auto;
+  background: #f9fafb;
   border-bottom: 1px solid #e5e7eb;
   flex-shrink: 0;
 }
-.picker-item {
-  max-width: 160px;
+.history-empty {
+  padding: 12px;
+  font-size: 13px;
+  color: #9ca3af;
+  font-family: system-ui, sans-serif;
+}
+.history-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid #f0f1f3;
+  cursor: pointer;
+  font-family: system-ui, sans-serif;
+}
+.history-item:hover {
+  background: #eef2ff;
+}
+.history-item.active {
+  background: #e0e7ff;
+}
+.history-index {
+  font-size: 11px;
+  color: #9ca3af;
+  min-width: 16px;
+}
+.history-tool {
+  font-size: 12px;
+  font-weight: 600;
+  color: #2563eb;
+  white-space: nowrap;
+}
+.history-label {
+  font-size: 12px;
+  color: #4b5563;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  padding: 2px 8px;
-  border-radius: 9999px;
-  border: 1px solid #d1d5db;
-  background: #ffffff;
-  color: #374151;
-  cursor: pointer;
-}
-.picker-item.active {
-  background: #2563eb;
-  border-color: #2563eb;
-  color: #ffffff;
 }
 
 .content {
