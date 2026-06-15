@@ -29,6 +29,10 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type { IPubSub } from "../events/pub-sub/index.js";
 import { PUBSUB_CHANNELS } from "../../src/config/pubsubChannels.js";
 import { log } from "../system/logger/index.js";
+import { getAllToolDescriptors } from "../agent/activeTools.js";
+import { buildMcpConfig, resolveMcpConfigPaths, BASE_ALLOWED_TOOLS, CLAUDE_AI_CONNECTOR_SERVERS } from "../agent/config.js";
+import { writeJsonAtomic } from "../utils/files/json.js";
+import { loadSettings } from "../system/config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -48,9 +52,13 @@ const GUI_CHANNEL = PUBSUB_CHANNELS.gui;
 // exposes the GUI-protocol tools (presentMarkdown, presentForm).
 const MCP_SERVER_PATH = path.join(__dirname, "..", "mcp", "present-markdown.mjs");
 
+// Server id of the spike GUI MCP server, merged into the broker
+// mcp-config alongside the real `mulmoclaude` broker.
+const GUI_MCP_SERVER_ID = "mulmoclaude-gui";
+
 // MCP tool names claude uses, in mcp__<server>__<tool> form. Auto-allowed
 // via --allowedTools so the GUI tools run without a permission prompt.
-const GUI_MCP_TOOLS = ["mcp__mulmoclaude-gui__presentMarkdown", "mcp__mulmoclaude-gui__presentForm"].join(",");
+const GUI_MCP_TOOLS = [`mcp__${GUI_MCP_SERVER_ID}__presentMarkdown`, `mcp__${GUI_MCP_SERVER_ID}__presentForm`];
 
 const GUI_HISTORY_LIMIT = 50;
 const FORM_POLL_HOLD_MS = 25 * 1000;
@@ -82,6 +90,9 @@ interface PtyEntry {
   };
   ws: WebSocket | null;
   buffer: string;
+  // Host path of the per-session mcp-config file written before spawn.
+  // Unlinked (best-effort) on reap so temp files don't accumulate.
+  mcpConfigPath?: string;
 }
 
 interface ActivityState {
@@ -120,6 +131,11 @@ function reap(id: string): void {
     entry.term.kill();
   } catch {
     // already gone
+  }
+  // Best-effort cleanup of the per-session mcp-config temp file
+  // (mirrors agent/index.ts's `finally` unlink).
+  if (entry.mcpConfigPath) {
+    fs.unlink(entry.mcpConfigPath).catch(() => {});
   }
   pubsub?.publish(SESSIONS_CHANNEL, { id, working: false, event: "closed" });
 }
@@ -165,19 +181,20 @@ function hookSettingsJson(port: number): string {
   });
 }
 
-function mcpConfigJson(sessionId: string, port: number): string {
-  return JSON.stringify({
-    mcpServers: {
-      "mulmoclaude-gui": {
-        command: process.execPath, // the node running this server
-        args: [MCP_SERVER_PATH],
-        env: {
-          MULMOCLAUDE_GUI_SESSION_ID: sessionId,
-          MULMOCLAUDE_GUI_PORT: String(port),
-        },
-      },
+// The spike GUI MCP server spec, merged into the broker's mcp-config
+// under `GUI_MCP_SERVER_ID`. `type: "stdio"` is required by Claude
+// Code 2.1.x for locally-spawned servers (see `buildMulmoclaudeServer`
+// in agent/config.ts) — without it the entry is silently skipped.
+function guiMcpServerSpec(sessionId: string, port: number): object {
+  return {
+    type: "stdio",
+    command: process.execPath, // the node running this server
+    args: [MCP_SERVER_PATH],
+    env: {
+      MULMOCLAUDE_GUI_SESSION_ID: sessionId,
+      MULMOCLAUDE_GUI_PORT: String(port),
     },
-  });
+  };
 }
 
 // ── Session listing (Claude .jsonl files) ───────────────────────────
@@ -494,8 +511,45 @@ async function handleConnection(ws: WebSocket, req: http.IncomingMessage, port: 
     const onDisk = resume ? await sessionFileExists(resume) : false;
 
     const settings = hookSettingsJson(port);
-    const mcp = mcpConfigJson(sessionId, port);
-    const guiArgs = ["--mcp-config", mcp, "--strict-mcp-config", "--allowedTools", GUI_MCP_TOOLS];
+
+    // Wire the REAL MulmoClaude MCP broker (auth + internal
+    // /api/agent/internal callbacks) plus the spike GUI server into
+    // this spawned `claude`. Roles are being removed, so we expose the
+    // full, unfiltered tool surface (`getAllToolDescriptors`) rather
+    // than a role-gated subset.
+    const allTools = getAllToolDescriptors();
+    const activePlugins = allTools.map((descriptor) => descriptor.name);
+    const mcpConfig = buildMcpConfig({
+      chatSessionId: sessionId,
+      port,
+      activePlugins,
+      useDocker: false,
+      userServers: {},
+    });
+    // Merge the spike GUI server so presentMarkdown / presentForm keep
+    // POSTing to /api/gui and rendering in the right panel.
+    mcpConfig.mcpServers[GUI_MCP_SERVER_ID] = guiMcpServerSpec(sessionId, port);
+
+    const mcpPaths = resolveMcpConfigPaths({ workspacePath: workspaceCwd, sessionId, useDocker: false });
+    await writeJsonAtomic(mcpPaths.hostPath, mcpConfig);
+
+    // Allowed-tools: base CLI tools + the broker wildcard + every
+    // broker tool's full name + claude.ai connectors + GUI tools +
+    // the web UI's extra allowlist. Deduped. We deliberately drop
+    // `--strict-mcp-config` so the user's claude.ai connectors and
+    // `claude mcp`-added servers also load.
+    const allowedTools = [
+      ...new Set([
+        ...BASE_ALLOWED_TOOLS,
+        "mcp__mulmoclaude",
+        ...CLAUDE_AI_CONNECTOR_SERVERS,
+        ...allTools.map((descriptor) => descriptor.fullName),
+        ...GUI_MCP_TOOLS,
+        ...loadSettings().extraAllowedTools,
+      ]),
+    ].join(",");
+
+    const guiArgs = ["--mcp-config", mcpPaths.argPath, "--allowedTools", allowedTools];
     const args = onDisk && resume ? ["--resume", resume, "--settings", settings, ...guiArgs] : ["--session-id", sessionId, "--settings", settings, ...guiArgs];
 
     log.info("terminal", `spawning claude (${onDisk ? "resume" : "new"} ${sessionId})`);
@@ -505,10 +559,10 @@ async function handleConnection(ws: WebSocket, req: http.IncomingMessage, port: 
       cols: 120,
       rows: 30,
       cwd: workspaceCwd,
-      env: process.env as { [key: string]: string },
+      env: { ...(process.env as { [key: string]: string }), MULMOCLAUDE_CHAT_SESSION_ID: sessionId },
     }) as unknown as PtyEntry["term"];
 
-    entry = { term, ws, buffer: "" };
+    entry = { term, ws, buffer: "", mcpConfigPath: mcpPaths.hostPath };
     ptys.set(sessionId, entry);
 
     if (!onDisk) {

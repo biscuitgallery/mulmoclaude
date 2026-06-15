@@ -140,3 +140,60 @@ export function getActiveToolDescriptors(role: Role): ActiveToolDescriptor[] {
 
   return out;
 }
+
+/** Unfiltered sibling of `getActiveToolDescriptors`. Returns EVERY
+ *  tool from all three sources (static GUI plugins, enabled static MCP
+ *  tools, runtime plugins) with NO `role.availablePlugins` gate.
+ *
+ *  Used by the interactive-terminal spawn (`server/terminal/index.ts`),
+ *  where roles are being removed: the terminal-spawned `claude` should
+ *  see the full MulmoClaude tool surface, not a role-filtered subset.
+ *  The `isMcpToolEnabled` (env/config availability) and `seen` (dedup)
+ *  checks are kept — those aren't role gates, they guard against
+ *  offering tools that can't actually run or registering a name twice. */
+export function getAllToolDescriptors(): ActiveToolDescriptor[] {
+  const seen = new Set<string>();
+  const out: ActiveToolDescriptor[] = [];
+
+  for (const def of PLUGIN_DEFS) {
+    if (seen.has(def.name)) continue;
+    out.push({
+      name: def.name,
+      fullName: fullNameFor(def.name),
+      description: def.description,
+      prompt: promptFor(def),
+      endpoint: TOOL_ENDPOINTS[def.name],
+      source: "static-gui",
+    });
+    seen.add(def.name);
+  }
+
+  for (const tool of mcpTools) {
+    const toolName = tool.definition.name;
+    if (seen.has(toolName) || !isMcpToolEnabled(tool)) continue;
+    out.push({
+      name: toolName,
+      fullName: fullNameFor(toolName),
+      description: tool.definition.description,
+      prompt: tool.prompt,
+      source: "static-mcp",
+    });
+    seen.add(toolName);
+  }
+
+  for (const plugin of getRuntimePlugins()) {
+    const def = plugin.definition;
+    if (seen.has(def.name)) continue; // runtime-registry collision
+    out.push({
+      name: def.name,
+      fullName: fullNameFor(def.name),
+      description: def.description,
+      prompt: promptFor(def),
+      endpoint: `/api/plugins/runtime/${encodeURIComponent(plugin.name)}/dispatch`,
+      source: "runtime",
+    });
+    seen.add(def.name);
+  }
+
+  return out;
+}

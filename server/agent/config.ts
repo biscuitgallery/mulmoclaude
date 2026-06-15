@@ -22,7 +22,7 @@ export const CONTAINER_WORKSPACE_PATH = "/home/node/mulmoclaude";
 // `Execute skill: <name>` and the model falls back to Glob+Read.
 // Bare `Skill` (no parens) permits all skills. See
 // plans/done/fix-skill-tool-allowlist.md.
-const BASE_ALLOWED_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "WebSearch", "Skill"];
+export const BASE_ALLOWED_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "WebSearch", "Skill"];
 
 // Pre-allow every tool published by Anthropic's claude.ai account-
 // level connectors so the agent can call them without firing a
@@ -45,7 +45,7 @@ const BASE_ALLOWED_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "We
 // is `display name with [\s.] → _` (e.g. `claude.ai Google Drive` →
 // `mcp__claude_ai_Google_Drive`). Confirm the live spelling via
 // `claude mcp list` before adding.
-const CLAUDE_AI_CONNECTOR_SERVERS = ["mcp__claude_ai_Gmail", "mcp__claude_ai_Google_Calendar", "mcp__claude_ai_Google_Drive", "mcp__claude_ai_Slack"];
+export const CLAUDE_AI_CONNECTOR_SERVERS = ["mcp__claude_ai_Gmail", "mcp__claude_ai_Google_Calendar", "mcp__claude_ai_Google_Drive", "mcp__claude_ai_Slack"];
 
 /** Tool names the agent is allowed to call this session. Drives
  *  `PLUGIN_NAMES` env (the MCP child's filter) and the CLI's
