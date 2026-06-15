@@ -146,6 +146,19 @@ const HOST_STATIC_CHANNELS = {
    *  `server/notifier/engine.ts` after persistence succeeds.
    *  Payload: `NotifierEvent`. */
   notifier: "notifier",
+  /** Interactive-terminal GUI-protocol frames. The GUI-protocol MCP
+   *  tools (presentMarkdown, presentForm) POST to `/api/gui`, which
+   *  publishes the frame here keyed by session id. Subscriber:
+   *  `src/components/terminal/GuiPanel.vue` (filters by the active
+   *  session id client-side). Payload:
+   *  `{ sessionId, type, data }`. */
+  gui: "gui",
+  /** Interactive-terminal session-activity events. The terminal PTY
+   *  relay publishes session created / working / closed here.
+   *  Subscriber: `src/components/terminal/TerminalChat.vue` (refetches
+   *  `/api/terminal/sessions`). Payload:
+   *  `{ id, working?, waiting?, event? }`. */
+  terminalSessions: "terminal-sessions",
 } as const;
 
 // First-write-wins host+plugin aggregate (see `defineHostAggregate`):

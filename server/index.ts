@@ -32,6 +32,7 @@ import skillsRoutes from "./api/routes/skills.js";
 import collectionsRoutes from "./api/routes/collections.js";
 import { startCollectionWatchers } from "./workspace/collections/watcher.js";
 import runtimePluginRoutes from "./api/routes/runtime-plugin.js";
+import { createTerminalRouter, attachTerminalServer } from "./terminal/index.js";
 import { loadRuntimePlugins } from "./plugins/runtime-loader.js";
 import { evaluateDevPluginGate, loadDevPlugins, parseDevPluginsEnv } from "./plugins/dev-loader.js";
 import { watchDevPlugins } from "./plugins/dev-watcher.js";
@@ -271,6 +272,19 @@ const RUNTIME_PLUGIN_ASSET_PATH_RE = /^\/plugins\/runtime\/[^/]+\/[^/]+\//;
 const RUNTIME_PLUGIN_OAUTH_CALLBACK_RE = /^\/plugins\/runtime\/oauth-callback\/[^/]+$/;
 app.use("/api", (req, res, next) => {
   if (req.path.startsWith("/files/")) {
+    next();
+    return;
+  }
+  // Interactive-terminal GUI-protocol data channel. The GUI-protocol
+  // MCP server subprocess (server/mcp/present-markdown.mjs) and the
+  // Claude settings hook (curl) POST/GET these paths WITHOUT a bearer
+  // token — they're local sibling processes with no way to read it.
+  // Same rationale as `/files/`: localhost-only listener + same-origin
+  // CSRF guard still apply. The browser's own fetches to these paths
+  // still attach the token (apiGet/apiPost); bypassed paths just skip
+  // the check, so authenticated requests pass through unchanged.
+  // `/api/terminal/sessions` stays behind auth (browser-only).
+  if (req.path.startsWith("/gui") || req.path === "/terminal/hook") {
     next();
     return;
   }
@@ -649,6 +663,10 @@ app.use(hookLogRoutes);
 app.use(skillsRoutes);
 app.use(collectionsRoutes);
 app.use(runtimePluginRoutes);
+// Interactive-terminal GUI-protocol routes (/api/terminal/*, /api/gui/*).
+// The WebSocket relay itself is attached in the app.listen callback below
+// via attachTerminalServer (it needs the live httpServer + pubsub + port).
+app.use(createTerminalRouter());
 async function listSessionsForBridge(opts: { limit: number; offset: number }) {
   const rows = await loadAllSessions();
   const sorted = rows.sort((leftSession, rightSession) => rightSession.changeMs - leftSession.changeMs);
@@ -1263,6 +1281,15 @@ process.on("SIGTERM", () => {
     // PR #1358). The adapter is sync + no-op outside darwin, so
     // wiring it here costs nothing.
     startMacosReminderAdapter();
+
+    // Attach the interactive-terminal PTY relay (raw ws at /ws/terminal)
+    // + its GUI-protocol data channel. Done here (not at module load)
+    // because it needs the live httpServer, the pubsub instance, and the
+    // actually-bound port (for the Claude settings hook + mcp-config it
+    // injects into each spawned `claude`). The `upgrade` handler it
+    // registers only claims `/ws/terminal`, so socket.io's `/ws/pubsub`
+    // keeps working.
+    attachTerminalServer(httpServer, { workspacePath, pubsub: earlyPubsub, port });
 
     // Publish the actually-bound port so the hook script can
     // address us — the requested PORT may have walked forward

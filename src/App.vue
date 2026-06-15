@@ -51,6 +51,12 @@
 
     <!-- Body: optional session-history column + sidebar (Single only) + canvas column + right sidebar -->
     <div class="flex flex-1 min-h-0">
+      <!-- Chat page: interactive `claude` PTY terminal (left) + GUI panel
+           (right). Replaces the legacy -p/stream-json agent chat. The
+           existing body (session-history panel, sidebar, canvas, right
+           sidebar) is preserved for every NON-chat page via v-else. -->
+      <TerminalChat v-if="isChatPage" />
+      <template v-else>
       <!-- Session-history side panel. Opt-in column to the left of
            the chat sidebar / canvas, toggled via
            SessionHistoryToggleButton. Renders on every page when
@@ -283,6 +289,7 @@
         :session-id="activeSession?.id ?? null"
         :selected-result-uuid="selectedResultUuid"
       />
+      </template>
     </div>
 
     <!-- Global settings modal -->
@@ -306,6 +313,7 @@ import { getPlugin } from "./tools";
 import type { ToolResultComplete } from "gui-chat-protocol/vue";
 import BackendOfflineBanner from "./components/BackendOfflineBanner.vue";
 import RightSidebar from "./components/RightSidebar.vue";
+import TerminalChat from "./components/terminal/TerminalChat.vue";
 import SidebarHeader from "./components/SidebarHeader.vue";
 import SessionHeaderControls from "./components/SessionHeaderControls.vue";
 import SessionTabBar from "./components/SessionTabBar.vue";
