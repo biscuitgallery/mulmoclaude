@@ -74,6 +74,13 @@ interface OkResponse {
 router.post(API_ROUTES.agent.internal.toolResult, async (req: Request<object, unknown, Record<string, unknown>>, res: Response<OkResponse>) => {
   const chatSessionId = getSessionQuery(req);
   const outcome = await pushToolResult(chatSessionId, req.body);
+  // TEMP diagnostic (terminal GUI panel debugging): confirms the MCP broker
+  // is actually posting tool results and which session they target.
+  log.info("toolResult-debug", "internal toolResult POST", {
+    session: chatSessionId,
+    toolName: (req.body as { toolName?: unknown })?.toolName,
+    outcome: outcome.kind,
+  });
   res.json({ ok: outcome.kind === "processed" });
 });
 
