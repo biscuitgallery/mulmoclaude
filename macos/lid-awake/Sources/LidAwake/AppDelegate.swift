@@ -8,9 +8,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var enabledByApp = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        NSLog("LidAwake: launched, creating status item")
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.behavior = []
+        statusItem.isVisible = true
         statusItem.menu = buildMenu()
         refreshUI(sleepDisabled: SleepControl.isSleepDisabled())
+        guard statusItem.button != nil else {
+            NSLog("LidAwake: status bar button could not be created")
+            showError("Could not create the menu bar item (no status bar button).")
+            return
+        }
+        NSLog("LidAwake: status item ready (visible=\(statusItem.isVisible))")
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -67,9 +76,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let button = statusItem.button else { return }
         let symbolName = active ? "cup.and.saucer.fill" : "cup.and.saucer"
         if let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: L10n.toggleTitle) {
+            image.isTemplate = true
             button.image = image
             button.title = ""
         } else {
+            NSLog("LidAwake: SF Symbol \(symbolName) unavailable, falling back to text")
             button.image = nil
             button.title = active ? "☕️" : "💤"
         }
