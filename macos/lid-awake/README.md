@@ -24,6 +24,14 @@ pmset -a disablesleep 0   # 無効化（通常のスリープ動作に戻す）
 - 電源メニューからの「スリープ」も抑止されます（`disablesleep` はシステム全体の設定です）
 - macOS 13 (Ventura) 以降を想定しています
 
+## かんたんインストール（推奨）
+
+ターミナルに以下を1行貼り付けるだけで、取得 → ビルド → `~/Applications/LidAwake.app` へのインストール → 起動まで自動で行います:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/biscuitgallery/mulmoclaude/claude/macos-lid-sleep-toggle-n2wmds/macos/lid-awake/install.sh | bash
+```
+
 ## ビルドと起動
 
 Xcode Command Line Tools（`xcode-select --install`）があればビルドできます。
