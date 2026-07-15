@@ -42,10 +42,10 @@ enum SleepControl {
     private static func mapScriptResult(_ errorInfo: NSDictionary?) -> Result<Void, SleepControlError> {
         guard let errorInfo else { return .success(()) }
         // -128 = user cancelled the password dialog; not a real failure.
-        if let code = errorInfo[NSAppleScriptErrorNumber] as? Int, code == -128 {
+        if let code = errorInfo[NSAppleScript.errorNumber] as? Int, code == -128 {
             return .failure(.cancelled)
         }
-        let message = errorInfo[NSAppleScriptErrorMessage] as? String ?? "\(errorInfo)"
+        let message = errorInfo[NSAppleScript.errorMessage] as? String ?? "\(errorInfo)"
         return .failure(.scriptFailure(message))
     }
 
