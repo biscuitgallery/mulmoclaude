@@ -28,4 +28,14 @@ enum L10n {
     static var errorTitle: String {
         isJapanese ? "スリープ設定を変更できませんでした" : "Could not change the sleep setting"
     }
+
+    static var alreadyRunningTitle: String {
+        isJapanese ? "LidAwake はすでに起動しています" : "LidAwake is already running"
+    }
+
+    static var alreadyRunningInfo: String {
+        isJapanese
+            ? "メニューバー右上の ☕ アイコンから操作できます。アイコンが見えない場合はノッチの裏に隠れている可能性があります。⌘キーを押しながら他のメニューバーアイコンをドラッグして空きを作ってください。"
+            : "Use the ☕ icon at the top-right of the menu bar. If you cannot see it, it may be hidden behind the notch — hold ⌘ and drag other menu bar icons to make room."
+    }
 }

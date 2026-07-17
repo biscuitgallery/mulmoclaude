@@ -33,6 +33,7 @@ echo "==> ビルドしています（初回は数分かかることがありま�
 bash scripts/make-app.sh
 
 mkdir -p "$INSTALL_DIR"
+pkill -x "$APP_NAME" 2>/dev/null || true
 rm -rf "${INSTALL_DIR:?}/${APP_NAME}.app"
 cp -R "dist/${APP_NAME}.app" "$INSTALL_DIR/"
 echo "==> ${INSTALL_DIR}/${APP_NAME}.app にインストールしました"

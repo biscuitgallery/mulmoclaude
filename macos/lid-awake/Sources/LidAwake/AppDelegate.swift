@@ -27,6 +27,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         _ = SleepControl.setSleepDisabled(false)
     }
 
+    // Fired when the user double-clicks the app while it is already running.
+    // A menu-bar-only app shows nothing on reopen, which reads as "won't
+    // launch" — explain where the app lives instead of staying silent.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = L10n.alreadyRunningTitle
+        alert.informativeText = L10n.alreadyRunningInfo
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+        return false
+    }
+
     // Re-sync with the real pmset state every time the menu opens, in case it
     // was changed from Terminal or another tool while we were idle.
     func menuWillOpen(_ menu: NSMenu) {
